@@ -723,6 +723,59 @@
             transform: scale(0.95);
         }
 
+        /* ================= UNDO / REDO BUTTONS ================= */
+        .history-bar {
+            position: fixed;
+            top: 18px;
+            left: 18px;
+            display: flex;
+            gap: 10px;
+        }
+
+        .history-btn {
+            width: 50px;
+            height: 55px;
+            border-radius: 16px;
+            border: none;
+            cursor: pointer;
+
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            background: rgba(255, 255, 255, 0.15);
+
+            backdrop-filter: blur(12px);
+            box-shadow: 0 10px 30px rgba(24, 75, 126, 0.5);
+            transition: all 0.25s ease;
+        }
+
+        .history-btn svg {
+            width: 55%;
+            height: 55%;
+            display: block;
+            pointer-events: none;
+        }
+
+        .history-btn.redo svg {
+            transform: scaleX(-1);
+        }
+
+        .history-btn:hover:not(:disabled) {
+            transform: scale(1.12);
+            background-color: rgba(255, 255, 255, 0.28);
+        }
+
+        .history-btn:active:not(:disabled) {
+            transform: scale(0.95);
+        }
+
+        .history-btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
         /* ================= WIN CONFETTI (realistic) ================= */
         .confetti-layer {
             position: fixed;
@@ -994,6 +1047,19 @@
             </svg>
         </button>
 
+        <div class="history-bar">
+            <button class="history-btn undo" id="undoBtn" onclick="undoMove()" aria-label="Undo move" title="Undo move (Ctrl+Z)" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path fill="#fff" d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" />
+                </svg>
+            </button>
+            <button class="history-btn redo" id="redoBtn" onclick="redoMove()" aria-label="Redo move" title="Redo move (Ctrl+Y)" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path fill="#fff" d="M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8z" />
+                </svg>
+            </button>
+        </div>
+
         <div class="board" id="board"></div>
         <div class="info-panel" id="infoPanel">White's turn</div>
     </div>
@@ -1021,6 +1087,7 @@
             setTimeout(launchConfetti, 350);
             updateInfoPanel();
             draw();
+            syncCurrentSnapshot();
             saveGameState();            // finished game => "Continue" becomes disabled
         }
 
@@ -1250,6 +1317,103 @@
         let gameResult = ""; // "checkmate", "stalemate", "draw", "resignation"
         let promotionPending = null;
 
+        // ================= UNDO / REDO HISTORY =================
+        // moveHistory[historyIndex] is always the position currently on the board.
+        let moveHistory = [];
+        let historyIndex = 0;
+        let aiTimer = null;
+
+        function snapshotState() {
+            return JSON.parse(JSON.stringify({
+                board, turn, moveCount, enPassantTarget, castlingRights,
+                lastMove, gameOver, gameResult
+            }));
+        }
+
+        function restoreSnapshot(snap) {
+            const c = JSON.parse(JSON.stringify(snap));   // copy, so later moves never alter history
+            board = c.board;
+            turn = c.turn;
+            moveCount = c.moveCount;
+            enPassantTarget = c.enPassantTarget;
+            castlingRights = c.castlingRights;
+            lastMove = c.lastMove || null;
+            gameOver = c.gameOver;
+            gameResult = c.gameResult || "";
+            selected = null;
+            suggestions = [];
+        }
+
+        function resetHistory() {
+            moveHistory = [snapshotState()];
+            historyIndex = 0;
+            updateHistoryButtons();
+        }
+
+        function pushHistory() {
+            moveHistory.length = historyIndex + 1;   // a new move discards the redo branch
+            moveHistory.push(snapshotState());
+            historyIndex = moveHistory.length - 1;
+            updateHistoryButtons();
+        }
+
+        function syncCurrentSnapshot() {              // used when the position changes without a move
+            if (moveHistory[historyIndex]) moveHistory[historyIndex] = snapshotState();
+        }
+
+        function updateHistoryButtons() {
+            const undoBtn = document.getElementById("undoBtn");
+            const redoBtn = document.getElementById("redoBtn");
+            if (!undoBtn || !redoBtn) return;
+            undoBtn.disabled = !!promotionPending || historyIndex <= 0;
+            redoBtn.disabled = !!promotionPending || historyIndex >= moveHistory.length - 1;
+        }
+
+        function jumpToHistory(index) {
+            clearTimeout(aiTimer);
+            aiTimer = null;
+            hidePromotionPicker();
+
+            historyIndex = index;
+            restoreSnapshot(moveHistory[index]);
+
+            updateInfoPanel();
+            draw();
+            saveGameState();
+            updateHistoryButtons();
+
+            // If we landed on the AI's turn (e.g. redo of a move whose reply was never played), let it answer
+            if (mode === "ai" && turn === "black" && !gameOver) {
+                aiTimer = setTimeout(aiMove, 300);
+            }
+        }
+
+        function undoMove() {
+            if (promotionPending) return;
+            let target = historyIndex - 1;
+            if (target < 0) return;
+            // vs AI: step back past the AI reply so it is the human's turn again
+            if (mode === "ai" && moveHistory[target].turn === "black" && target > 0) target--;
+            jumpToHistory(target);
+        }
+
+        function redoMove() {
+            if (promotionPending) return;
+            let target = historyIndex + 1;
+            if (target >= moveHistory.length) return;
+            if (mode === "ai" && moveHistory[target].turn === "black" && target + 1 < moveHistory.length) target++;
+            jumpToHistory(target);
+        }
+
+        // Keyboard: Ctrl+Z = undo, Ctrl+Y or Ctrl+Shift+Z = redo
+        document.addEventListener("keydown", (e) => {
+            if (!e.ctrlKey || e.altKey || e.metaKey) return;
+            if (game.style.display !== "block") return;
+            const k = e.key.toLowerCase();
+            if (k === "z" && !e.shiftKey) { e.preventDefault(); undoMove(); }
+            else if (k === "y" || (k === "z" && e.shiftKey)) { e.preventDefault(); redoMove(); }
+        });
+
         // Local Storage keys
         const STORAGE_KEYS = {
             GAME_STATE: 'chess_game_state',
@@ -1349,6 +1513,16 @@
                     lastMove = state.lastMove || null;
                     gameResult = state.gameResult || "";
 
+                    if (Array.isArray(state.moveHistory) && state.moveHistory.length > 0 &&
+                        Number.isInteger(state.historyIndex) &&
+                        state.historyIndex >= 0 && state.historyIndex < state.moveHistory.length) {
+                        moveHistory = state.moveHistory;
+                        historyIndex = state.historyIndex;
+                        updateHistoryButtons();
+                    } else {
+                        resetHistory();           // game saved before undo/redo existed
+                    }
+
                     selected = null;
                     suggestions = [];
 
@@ -1394,7 +1568,9 @@
                 mode: mode,
                 difficulty: difficulty,
                 lastMove: lastMove,
-                gameResult: gameResult
+                gameResult: gameResult,
+                moveHistory: moveHistory,
+                historyIndex: historyIndex
             };
 
             localStorage.setItem(STORAGE_KEYS.GAME_STATE, JSON.stringify(gameState));
@@ -1423,6 +1599,7 @@
             gameResult = "";
             promotionPending = null;
             hidePromotionPicker();
+            resetHistory();
             updateInfoPanel();
             draw();
 
@@ -1687,6 +1864,7 @@
                 moveSound = "check";
             }
             playSound(moveSound);
+            pushHistory();
 
             selected = null;
             suggestions = [];
@@ -1698,7 +1876,7 @@
 
             // AI move if needed
             if (mode === "ai" && turn === "black" && !gameOver) {
-                setTimeout(aiMove, 300);
+                aiTimer = setTimeout(aiMove, 300);
             }
         }
 
