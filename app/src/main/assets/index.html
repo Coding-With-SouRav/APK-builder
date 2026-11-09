@@ -304,6 +304,11 @@
             height: 100%;
         }
 
+        /* 2-player mode: black pieces are turned 180deg (in place) so the opponent sees them upright */
+        .piece.flipped svg {
+            transform: rotate(180deg);
+        }
+
         .square:hover .piece {
             transform: scale(1.08);
             filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.5));
@@ -1672,6 +1677,7 @@
                         const wrap = document.createElement("div");
                         wrap.className = "piece";
                         wrap.innerHTML = icons[cell];
+                        if (mode === "2p" && cell === cell.toLowerCase()) wrap.classList.add("flipped");
                         if (isAt(loserKing, x, y)) wrap.classList.add("fallen");
                         else if (isAt(winnerKing, x, y)) wrap.classList.add("victor");
                         else if (drawKings.some(k => isAt(k, x, y))) wrap.classList.add("drawKing");
